@@ -270,6 +270,35 @@
          @select-query="selectQuery"
          @close="isHistoryOpen = false"
       />
+      <div
+         v-if="showConfirmModal"
+         class="modal active"
+         @click.self="cancelQueryExecution"
+      >
+         <div class="modal-container">
+            <div class="modal-header">
+               <div class="modal-title h5">
+                  {{ t('database.confirmQueryExecution') }}
+               </div>
+            </div>
+            <div class="modal-body">
+               <div class="content">
+                  <p>{{ t('database.confirmQueryMessage') }}</p>
+                  <div class="code-container">
+                     <pre class="query-preview"><code>{{ pendingQuery }}</code></pre>
+                  </div>
+               </div>
+            </div>
+            <div class="modal-footer">
+               <button class="btn btn-link" @click="cancelQueryExecution">
+                  {{ t('general.cancel') }}
+               </button>
+               <button class="btn btn-primary" @click="executeConfirmedQuery">
+                  {{ t('general.run') }}
+               </button>
+            </div>
+         </div>
+      </div>
    </div>
 </template>
 
@@ -357,6 +386,8 @@ const editorHeight = ref(200);
 const isQuerySaved = ref(false);
 const isHistoryOpen = ref(false);
 const debounceTimeout = ref(null);
+const showConfirmModal = ref(false);
+const pendingQuery = ref('');
 
 const workspace = computed(() => getWorkspace(props.connection.uid));
 const breadcrumbsSchema = computed(() => workspace.value.breadcrumbs.schema || null);
@@ -442,8 +473,6 @@ watch(isChanged, (val) => {
 
 const runQuery = async (query: string) => {
    if (!query || isQuering.value) return;
-   isQuering.value = true;
-   console.log({ query });
 
    if (executeSelected.value) {
       const selectedQuery = queryEditor.value.editor.getSelectedText();
@@ -459,6 +488,38 @@ const runQuery = async (query: string) => {
       return selectRegex.test(q) && !limitRegex.test(q) && q !== '' ? `${q} LIMIT ${queryRowLimit.value}` : q;
    }).join(';\n');
 
+   // Check if this is a write query that needs confirmation
+   const isWriteQuery = containsWriteOperation(query);
+   if (isWriteQuery) {
+      // Show confirmation modal for write queries
+      pendingQuery.value = query;
+      showConfirmModal.value = true;
+   }
+   else executeQueryDirectly(query);
+};
+
+const containsWriteOperation = (query: string): boolean => {
+   const writePatterns = [
+      /\binsert\b/i,
+      /\bupdate\b/i,
+      /\bdelete\b/i,
+      /\btruncate\b/i,
+      /\balter\b/i,
+      /\bdrop\b/i,
+      /\bcreate\b/i,
+      /\brename\b/i,
+      /\breplace\b/i,
+      /\bgrant\b/i,
+      /\brevoke\b/i,
+      /\bmerge\b/i,
+      /\bcall\b/i,
+      /\bexec\b/i
+   ];
+   return writePatterns.some(pattern => pattern.test(query));
+};
+
+const executeQueryDirectly = async (query: string) => {
+   isQuering.value = true;
    clearTabData();
    queryTable.value.resetSort();
 
@@ -499,6 +560,20 @@ const runQuery = async (query: string) => {
 
    isQuering.value = false;
    lastQuery.value = query;
+};
+
+const executeConfirmedQuery = async () => {
+   if (!pendingQuery.value || isQuering.value) return;
+   isQuering.value = true;
+   showConfirmModal.value = false;
+
+   executeQueryDirectly(pendingQuery.value);
+   pendingQuery.value = '';
+};
+
+const cancelQueryExecution = () => {
+   showConfirmModal.value = false;
+   pendingQuery.value = '';
 };
 
 const killTabQuery = async () => {
@@ -943,5 +1018,61 @@ onBeforeUnmount(() => {
   .workspace-query-results {
     min-height: 200px;
   }
+
+  .query-preview {
+   background-color: var(--bg-color-dark);
+   padding: 0.8rem;
+   border-radius: 0.2rem;
+   overflow-x: auto;
+   white-space: pre-wrap;
+   font-family: monospace;
+   max-height: 300px;
+   overflow-y: auto;
+   margin-top: 0.5rem;
+   }
+
+   .modal-container {
+      max-width: 800px;
+      max-height: 80vh;
+      .modal-body {
+         max-height: calc(80vh - 160px);
+         overflow-y: auto;
+      }
+   }
+
+   .code-container {
+      border: 1px solid var(--border-color);
+      border-radius: 0.2rem;
+      margin-top: 0.8rem;
+      position: relative;
+      &::before {
+         content: 'SQL';
+         position: absolute;
+         top: -10px;
+         left: 10px;
+         background: var(--bg-color);
+         padding: 0 0.4rem;
+         font-size: 0.7rem;
+         color: var(--gray-color);
+      }
+   }
+
+   .query-preview {
+      background-color: var(--bg-color-dark);
+      padding: 1rem;
+      border-radius: 0.1rem;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      font-family: monospace;
+      max-height: 300px;
+      overflow-y: auto;
+      margin: 0;
+      code {
+         color: var(--primary-color-light);
+         display: block;
+         line-height: 1.5;
+         background: transparent;
+      }
+   }
 }
 </style>filePathsfilePathsfilePaths

@@ -488,37 +488,6 @@ const runQuery = async (query: string) => {
       return selectRegex.test(q) && !limitRegex.test(q) && q !== '' ? `${q} LIMIT ${queryRowLimit.value}` : q;
    }).join(';\n');
 
-   // Check if this is a write query that needs confirmation
-   const isWriteQuery = containsWriteOperation(query);
-   if (isWriteQuery) {
-      // Show confirmation modal for write queries
-      pendingQuery.value = query;
-      showConfirmModal.value = true;
-   }
-   else executeQueryDirectly(query);
-};
-
-const containsWriteOperation = (query: string): boolean => {
-   const writePatterns = [
-      /\binsert\b/i,
-      /\bupdate\b/i,
-      /\bdelete\b/i,
-      /\btruncate\b/i,
-      /\balter\b/i,
-      /\bdrop\b/i,
-      /\bcreate\b/i,
-      /\brename\b/i,
-      /\breplace\b/i,
-      /\bgrant\b/i,
-      /\brevoke\b/i,
-      /\bmerge\b/i,
-      /\bcall\b/i,
-      /\bexec\b/i
-   ];
-   return writePatterns.some(pattern => pattern.test(query));
-};
-
-const executeQueryDirectly = async (query: string) => {
    isQuering.value = true;
    clearTabData();
    queryTable.value.resetSort();
@@ -560,20 +529,6 @@ const executeQueryDirectly = async (query: string) => {
 
    isQuering.value = false;
    lastQuery.value = query;
-};
-
-const executeConfirmedQuery = async () => {
-   if (!pendingQuery.value || isQuering.value) return;
-   isQuering.value = true;
-   showConfirmModal.value = false;
-
-   executeQueryDirectly(pendingQuery.value);
-   pendingQuery.value = '';
-};
-
-const cancelQueryExecution = () => {
-   showConfirmModal.value = false;
-   pendingQuery.value = '';
 };
 
 const killTabQuery = async () => {
@@ -759,6 +714,14 @@ const reloadListener = () => {
       runQuery(query.value);
 };
 
+const executeCurrentListener = () => {
+   const hasModalOpen = !!document.querySelectorAll('.modal.active').length;
+   if (props.isSelected && !hasModalOpen) {
+      const statement = getCurrentStatement();
+      runQuery(statement);
+   }
+};
+
 const formatListener = () => {
    const hasModalOpen = !!document.querySelectorAll('.modal.active').length;
    if (props.isSelected && !hasModalOpen)
@@ -801,6 +764,126 @@ const saveContentListener = () => {
       saveFile();
 };
 
+const getCurrentStatement = () => {
+   // Access editor, cursor position, and document lines
+   const editor = queryEditor.value.editor; // Adjust based on actual editor reference
+   const cursor = editor.getCursorPosition(); // {row, column}
+   const session = editor.getSession();
+   const lines = session.getDocument().getAllLines();
+
+   // State variables to track context
+   let inMultiLineComment = false;
+   let inString = false;
+   const semicolonPositions = []; // Array of {row, column} for valid semicolons
+
+   // Parse each line to find semicolons not in strings or comments
+   for (let row = 0; row < lines.length; row++) {
+      const line = lines[row];
+      let col = 0;
+
+      while (col < line.length) {
+         if (inMultiLineComment) {
+            // Look for end of multi-line comment
+            const idx = line.indexOf('*/', col);
+            if (idx !== -1) {
+               inMultiLineComment = false;
+               col = idx + 2;
+            }
+            else
+               break; // Comment continues to next line
+         }
+         else if (inString) {
+            // Process string literal until closing quote
+            while (col < line.length) {
+               if (line[col] === '\'') {
+                  if (col + 1 < line.length && line[col + 1] === '\'')
+                     col += 2; // Escaped quote
+                  else {
+                     inString = false;
+                     col += 1;
+                     break;
+                  }
+               }
+               else
+                  col += 1;
+            }
+         }
+         else {
+            // Not in comment or string; look for special characters
+            const commentIdx = line.indexOf('--', col);
+            const multiCommentIdx = line.indexOf('/*', col);
+            const quoteIdx = line.indexOf('\'', col);
+            const semicolonIdx = line.indexOf(';', col);
+
+            // Find the earliest special character
+            const nextIdx = Math.min(
+               commentIdx >= 0 ? commentIdx : Infinity,
+               multiCommentIdx >= 0 ? multiCommentIdx : Infinity,
+               quoteIdx >= 0 ? quoteIdx : Infinity,
+               semicolonIdx >= 0 ? semicolonIdx : Infinity
+            );
+
+            if (nextIdx === Infinity)
+               break; // No more special characters in this line
+
+            if (nextIdx === semicolonIdx) {
+               semicolonPositions.push({ row, column: semicolonIdx });
+               col = semicolonIdx + 1;
+            }
+            else if (nextIdx === commentIdx) {
+               col = commentIdx; // Rest of line is commented
+               break;
+            }
+            else if (nextIdx === multiCommentIdx) {
+               inMultiLineComment = true;
+               col = multiCommentIdx + 2;
+            }
+            else if (nextIdx === quoteIdx) {
+               inString = true;
+               col = quoteIdx + 1;
+            }
+         }
+      }
+   }
+
+   // Define document end
+   const lastRow = lines.length - 1;
+   const documentEnd = { row: lastRow, column: lines[lastRow].length };
+
+   // If no semicolons, the entire document is one statement
+   if (semicolonPositions.length === 0)
+      return session.getTextRange({ start: { row: 0, column: 0 }, end: documentEnd }).trim();
+
+   const positionLessOrEqual = (p1, p2) => p1.row < p2.row || (p1.row === p2.row && p1.column <= p2.column);
+
+   const nextPosition = (pos) => {
+      const line = lines[pos.row];
+      if (pos.column + 1 < line.length)
+         return { row: pos.row, column: pos.column + 1 };
+      else
+         return { row: pos.row + 1, column: 0 };
+   };
+
+   // Find the first semicolon where cursor <= semicolon position
+   const i = semicolonPositions.findIndex(p => positionLessOrEqual(cursor, p));
+
+   if (i === -1) {
+      // Cursor is after all semicolons
+      const start = nextPosition(semicolonPositions[semicolonPositions.length - 1]);
+      return session.getTextRange({ start, end: documentEnd }).trim();
+   }
+   else if (i === 0) {
+      // Cursor is in the first statement
+      const end = nextPosition(semicolonPositions[0]);
+      return session.getTextRange({ start: { row: 0, column: 0 }, end }).trim();
+   }
+   else {
+      // Cursor is between two semicolons
+      const start = nextPosition(semicolonPositions[i - 1]);
+      const end = nextPosition(semicolonPositions[i]);
+      return session.getTextRange({ start, end }).trim();
+   }
+};
 const openFile = async () => {
    const result = await Application.showOpenDialog({ properties: ['openFile'], filters: [{ name: 'SQL', extensions: ['sql', 'txt'] }] });
    if (result && !result.canceled) {
@@ -862,6 +945,7 @@ onMounted(() => {
    const localResizer = resizer.value;
 
    ipcRenderer.on('run-or-reload', reloadListener);
+   ipcRenderer.on('run-on-cursor', executeCurrentListener);
    ipcRenderer.on('format-query', formatListener);
    ipcRenderer.on('kill-query', killQueryListener);
    ipcRenderer.on('clear-query', clearQueryListener);

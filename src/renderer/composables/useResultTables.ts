@@ -18,6 +18,8 @@ export function useResultTables (uid: string, reloadTable: () => void) {
    async function updateField (payload: TableUpdateParams) {
       isQuering.value = true;
 
+      console.log({ payload });
+
       const params = {
          uid: uid,
          ...payload
